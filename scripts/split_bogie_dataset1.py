@@ -3,7 +3,6 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from pathlib import Path
 
-
 def main():
     root = Path(__file__).resolve().parents[1]
     bogie_dataset1 = root.joinpath("data", "raw", "bogie", "dataset1.csv")
