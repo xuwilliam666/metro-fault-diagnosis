@@ -111,29 +111,6 @@ def best_f1_with_adjust(point_scores, label, n_thr=300, q_lo=0.80, q_hi=0.999):
 
     return best, best_pred
 
-def make_window_labels(point_label, T, win_size, step):
-    wl = []
-    for s in range(0, T - win_size + 1, step):
-        wl.append(1 if point_label[s:s+win_size].max() > 0 else 0)
-    return np.array(wl, dtype=np.int32)
-
-def best_f1_binary(scores, labels, n_thr=2000, mode="linspace"):
-    scores = scores.astype(np.float64)
-    labels = labels.astype(np.int32)
-
-    if mode == "linspace":
-        thrs = np.linspace(scores.min(), scores.max(), n_thr)
-    else:
-        thrs = np.quantile(scores, np.linspace(0, 1, n_thr))
-
-    best = {"thr": None, "P": 0.0, "R": 0.0, "F1": -1.0}
-    for thr in thrs:
-        pred = (scores > thr).astype(np.int32)
-        P, R, F1, _ = precision_recall_fscore_support(labels, pred, average="binary", zero_division=0)
-        if F1 > best["F1"]:
-            best = {"thr": float(thr), "P": float(P), "R": float(R), "F1": float(F1)}
-    return best
-
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -215,23 +192,25 @@ def main():
     win_scores = compute_scores(model, test_loader, device, lambda_kl=lambda_kl)
     print("test window scores:", win_scores.shape)
 
-    label = np.asarray(test_label).astype(np.int32)
+    # 1) window->point
     T = int(meta["test_T"])
     win_size = int(meta["win_size"])
     step = int(meta["step"])
+    point_scores = window_to_point_scores(win_scores, T=T, win_size=win_size, step=step)
 
-    win_label = make_window_labels(label, T, win_size, step)
+    # 2) best F1 with point-adjust
+    label = np.asarray(test_label).astype(np.int32)
+    best, best_pred = best_f1_with_adjust(point_scores, label, n_thr=300)
 
-    best_win = best_f1_binary(win_scores, win_label, n_thr=2000, mode="linspace")
-    print("[WIN-LEVEL BEST]", best_win, "win_label_ratio=", win_label.mean())
+    print(f"[BEST] thr={best['thr']:.6f}  P={best['P']:.4f}  R={best['R']:.4f}  F1={best['F1']:.4f}")
 
     # save artifacts
-    # np.save(root / "logs" / "metropT_test_window_scores.npy", win_scores)
-    # np.save(root / "logs" / "metropT_test_point_scores.npy", point_scores)
-    # np.save(root / "logs" / "metropT_best_pred_adjusted.npy", best_pred.astype(np.uint8))
+    np.save(root / "logs" / "metropT_test_window_scores.npy", win_scores)
+    np.save(root / "logs" / "metropT_test_point_scores.npy", point_scores)
+    np.save(root / "logs" / "metropT_best_pred_adjusted.npy", best_pred.astype(np.uint8))
 
-    # with open(root / "logs" / "metropT_best_metrics.txt", "w") as f:
-    #     f.write(str(best) + "\n")
+    with open(root / "logs" / "metropT_best_metrics.txt", "w") as f:
+        f.write(str(best) + "\n")
 
     print("Saved:")
     print(" - logs/metropT_test_window_scores.npy")
