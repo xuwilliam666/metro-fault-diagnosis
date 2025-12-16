@@ -1,4 +1,3 @@
-# src/data/metropt3_dataset.py
 from pathlib import Path
 import numpy as np
 import torch
