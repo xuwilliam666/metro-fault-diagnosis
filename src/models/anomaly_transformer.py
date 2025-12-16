@@ -156,21 +156,33 @@ class AnomalyTransformer(nn.Module):
 
 
 def anomaly_transformer_loss(x, recon, series_list, prior_list, lambda_kl=1.0, eps=1e-8):
-    # recon loss
+    """
+    Paper minimax (two-phase) losses with stop-gradient.
+    Returns:
+      loss_min: update PRIOR branch (sigma/prior) -> minimize discrepancy (series detached)
+      loss_max: update SERIES branch (attention/series) -> maximize discrepancy (prior detached)
+      rec_loss, loss_series, loss_prior: for logging
+    """
+    # reconstruction (Frobenius/MSE)
     rec_loss = (recon - x).pow(2).mean()
 
-    series_loss = 0.0
-    prior_loss  = 0.0
+    loss_series = 0.0  # KL(S || P_detach)
+    loss_prior  = 0.0  # KL(P || S_detach)
 
     for s, p in zip(series_list, prior_list):
         s_ = s.clamp_min(eps)
         p_ = p.clamp_min(eps)
 
-        kl_sp = (s_ * (torch.log(s_) - torch.log(p_))).sum(dim=-1).mean()
-        kl_ps = (p_ * (torch.log(p_) - torch.log(s_))).sum(dim=-1).mean()
+        # maximize discrepancy by updating S (P detached)
+        loss_series = loss_series + (s_ * (torch.log(s_) - torch.log(p_.detach()))).sum(dim=-1).mean()
 
-        series_loss = series_loss + kl_sp
-        prior_loss  = prior_loss  + kl_ps
+        # minimize discrepancy by updating P (S detached)
+        loss_prior  = loss_prior  + (p_ * (torch.log(p_) - torch.log(s_.detach()))).sum(dim=-1).mean()
 
-    loss = rec_loss + lambda_kl * (series_loss + prior_loss)
-    return loss, rec_loss, series_loss, prior_loss
+    # minimization phase: make PRIOR close to SERIES (series fixed)
+    loss_min = rec_loss + lambda_kl * loss_prior
+
+    # maximization phase: make SERIES far from PRIOR (prior fixed)
+    loss_max = rec_loss - lambda_kl * loss_series
+
+    return loss_min, loss_max, rec_loss, loss_series, loss_prior
