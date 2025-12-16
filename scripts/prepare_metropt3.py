@@ -49,12 +49,14 @@ def main():
     Xn = (X - mu) / sd
 
     train = Xn[:split_idx].astype(np.float32)
+    train_label = label[:split_idx].astype(np.int8)
     test = Xn[split_idx:].astype(np.float32)
     test_label = label[split_idx:].astype(np.int8)
 
     np.save(out_dir / "train.npy", train)
     np.save(out_dir / "test.npy", test)
     np.save(out_dir / "test_label.npy", test_label)
+    np.save(out_dir / "train_label.npy", train_label.astype(np.uint8))
 
     meta = {
         "timestamp_col": ts_col,
@@ -71,7 +73,9 @@ def main():
 
     print("Saved:", out_dir)
     print("train:", train.shape, "test:", test.shape, "test_label:", test_label.shape)
+    print("train anomaly ratio:", train_label.mean())
     print("test anomaly ratio:", test_label.mean())
+
 
 
 if __name__ == "__main__":
