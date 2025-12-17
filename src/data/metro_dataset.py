@@ -252,7 +252,7 @@ if __name__ == "__main__":
         batch_size=64,
         num_workers=0,
         seed=42,
-        balance_train=True,   # 你要不平衡就改 False
+        balance_train=True,
     )
 
     print("meta:", meta)
