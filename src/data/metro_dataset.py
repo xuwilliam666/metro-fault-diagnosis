@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
-from torch.utils.data import Dataset, DataLoader, ConcatDataset, Subset, WeightedRandomSampler
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, WeightedRandomSampler
 from pathlib import Path
 
 
@@ -55,6 +55,45 @@ class MetroVibWindowDataset(Dataset):
         return torch.from_numpy(w), torch.tensor(self.y, dtype=torch.long)
 
 
+def split_sequence_by_time(x_3axis: np.ndarray, split=(0.7, 0.15, 0.15)):
+    """
+    Split a full [N,3] sequence into contiguous train/val/test segments.
+    """
+    if x_3axis.ndim != 2:
+        raise ValueError(f"expected [N,C] array, got {x_3axis.shape}")
+
+    a, b, c = split
+    if abs((a + b + c) - 1.0) > 1e-6:
+        raise ValueError(f"split must sum to 1.0, got {split}")
+
+    n = len(x_3axis)
+    n_tr = int(n * a)
+    n_va = int(n * b)
+    n_te = n - n_tr - n_va
+
+    if min(n_tr, n_va, n_te) <= 0:
+        raise ValueError(f"invalid split {split} for sequence length {n}")
+
+    tr = x_3axis[:n_tr]
+    va = x_3axis[n_tr:n_tr + n_va]
+    te = x_3axis[n_tr + n_va:]
+    return tr, va, te
+
+
+def build_windows_from_sequence(
+    x_3axis: np.ndarray,
+    y: int,
+    window_size: int = 2048,
+    stride: int = 512,
+):
+    return MetroVibWindowDataset(
+        x_3axis=x_3axis,
+        y=y,
+        window_size=window_size,
+        stride=stride,
+    )
+
+
 def build_metro_vib_dataloaders(
     x_fail, y_fail, z_fail,
     x_norm, y_norm, z_norm,
@@ -70,9 +109,9 @@ def build_metro_vib_dataloaders(
     Key idea:
       1) read/clean each axis
       2) align length per class by min length across axes
-      3) z-score using ALL data (fail+norm) to avoid leaking "time split" assumptions
-      4) create full window datasets for fail and norm
-      5) split by WINDOW INDICES randomly (not by time)
+      3) split each class into contiguous train/val/test segments by time
+      4) compute z-score stats using TRAIN segments only
+      5) generate sliding windows separately inside each split
       6) optionally balance TRAIN with WeightedRandomSampler
     """
     # ---- 1) read & clean
@@ -91,44 +130,30 @@ def build_metro_vib_dataloaders(
     fail = np.stack([fail_x[:L_fail], fail_y[:L_fail], fail_z[:L_fail]], axis=1)  # [N,3]
     norm = np.stack([norm_x[:L_norm], norm_y[:L_norm], norm_z[:L_norm]], axis=1)
 
-    # ---- 3) z-score using ALL samples (fail+norm)
-    all_for_stats = np.concatenate([fail, norm], axis=0)
-    mean = all_for_stats.mean(axis=0, keepdims=True)
-    std = all_for_stats.std(axis=0, keepdims=True) + 1e-8
+    # ---- 3) split raw sequences first to avoid window leakage
+    fail_tr_raw, fail_va_raw, fail_te_raw = split_sequence_by_time(fail, split=split)
+    norm_tr_raw, norm_va_raw, norm_te_raw = split_sequence_by_time(norm, split=split)
 
-    fail = (fail - mean) / std
-    norm = (norm - mean) / std
+    # ---- 4) z-score using TRAIN samples only
+    all_train_for_stats = np.concatenate([fail_tr_raw, norm_tr_raw], axis=0)
+    mean = all_train_for_stats.mean(axis=0, keepdims=True)
+    std = all_train_for_stats.std(axis=0, keepdims=True) + 1e-8
 
-    # ---- 4) full window datasets
-    ds_fail_all = MetroVibWindowDataset(fail, y=1, window_size=window_size, stride=stride)
-    ds_norm_all = MetroVibWindowDataset(norm, y=0, window_size=window_size, stride=stride)
+    fail_tr = ((fail_tr_raw - mean) / std).astype(np.float32)
+    fail_va = ((fail_va_raw - mean) / std).astype(np.float32)
+    fail_te = ((fail_te_raw - mean) / std).astype(np.float32)
+    norm_tr = ((norm_tr_raw - mean) / std).astype(np.float32)
+    norm_va = ((norm_va_raw - mean) / std).astype(np.float32)
+    norm_te = ((norm_te_raw - mean) / std).astype(np.float32)
 
-    # ---- 5) split by window indices
-    rng = np.random.default_rng(seed)
+    # ---- 5) create per-split window datasets
+    ds_fail_tr = build_windows_from_sequence(fail_tr, y=1, window_size=window_size, stride=stride)
+    ds_fail_va = build_windows_from_sequence(fail_va, y=1, window_size=window_size, stride=stride)
+    ds_fail_te = build_windows_from_sequence(fail_te, y=1, window_size=window_size, stride=stride)
 
-    def split_indices(n, split_tuple):
-        a, b, c = split_tuple
-        if abs((a + b + c) - 1.0) > 1e-6:
-            raise ValueError(f"split must sum to 1.0, got {split_tuple}")
-        idx = np.arange(n)
-        rng.shuffle(idx)
-        n_tr = int(n * a)
-        n_va = int(n * b)
-        tr = idx[:n_tr]
-        va = idx[n_tr:n_tr + n_va]
-        te = idx[n_tr + n_va:]
-        return tr, va, te
-
-    fail_tr_idx, fail_va_idx, fail_te_idx = split_indices(len(ds_fail_all), split)
-    norm_tr_idx, norm_va_idx, norm_te_idx = split_indices(len(ds_norm_all), split)
-
-    ds_fail_tr = Subset(ds_fail_all, fail_tr_idx)
-    ds_fail_va = Subset(ds_fail_all, fail_va_idx)
-    ds_fail_te = Subset(ds_fail_all, fail_te_idx)
-
-    ds_norm_tr = Subset(ds_norm_all, norm_tr_idx)
-    ds_norm_va = Subset(ds_norm_all, norm_va_idx)
-    ds_norm_te = Subset(ds_norm_all, norm_te_idx)
+    ds_norm_tr = build_windows_from_sequence(norm_tr, y=0, window_size=window_size, stride=stride)
+    ds_norm_va = build_windows_from_sequence(norm_va, y=0, window_size=window_size, stride=stride)
+    ds_norm_te = build_windows_from_sequence(norm_te, y=0, window_size=window_size, stride=stride)
 
     train_ds = ConcatDataset([ds_fail_tr, ds_norm_tr])
     val_ds = ConcatDataset([ds_fail_va, ds_norm_va])
@@ -170,6 +195,16 @@ def build_metro_vib_dataloaders(
         "L_norm": int(L_norm),
         "mean": mean.reshape(-1).tolist(),
         "std": std.reshape(-1).tolist(),
+        "fail_split_lengths": {
+            "train": int(len(fail_tr_raw)),
+            "val": int(len(fail_va_raw)),
+            "test": int(len(fail_te_raw)),
+        },
+        "norm_split_lengths": {
+            "train": int(len(norm_tr_raw)),
+            "val": int(len(norm_va_raw)),
+            "test": int(len(norm_te_raw)),
+        },
         "num_train_windows": len(train_ds),
         "num_val_windows": len(val_ds),
         "num_test_windows": len(test_ds),

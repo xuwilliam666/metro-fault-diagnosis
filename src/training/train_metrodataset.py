@@ -1,3 +1,4 @@
+import argparse
 import os
 import torch
 import torch.nn as nn
@@ -6,12 +7,30 @@ from pathlib import Path
 from src.data.metro_dataset import build_metro_vib_dataloaders
 from src.models.lstm_fcn import LSTMFCNClassifier
 
+
+def parse_args():
+    root = Path(__file__).resolve().parent.parent.parent
+    parser = argparse.ArgumentParser(description="Train Metro supervised baseline with LSTM-FCN")
+    parser.add_argument("--data_root", type=Path, default=root / "data" / "raw" / "MetroDataset")
+    parser.add_argument("--window_size", type=int, default=2048)
+    parser.add_argument("--stride", type=int, default=512)
+    parser.add_argument("--split", type=float, nargs=3, default=(0.7, 0.15, 0.15))
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--balance_train", action="store_true", default=True)
+    parser.add_argument("--no_balance_train", action="store_false", dest="balance_train")
+    return parser.parse_args()
+
+
 def train():
+    args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
     root = Path(__file__).resolve().parent.parent.parent
-    data_root = root / "data" / "raw" / "MetroDataset"
+    data_root = Path(args.data_root)
 
     train_loader, val_loader, test_loader, meta = build_metro_vib_dataloaders(
         x_fail=data_root / "Failure" / "Metro_vibration_v1_x_axis_failure.csv",
@@ -20,13 +39,13 @@ def train():
         x_norm=data_root / "Normal" / "Metro_vibration_v1_x_axis_normal.csv",
         y_norm=data_root / "Normal" / "Metro_vibration_v1_y_axis_normal.csv",
         z_norm=data_root / "Normal" / "Metro_vibration_v1_z_axis_normal.csv",
-        window_size=2048,
-        stride=512,
-        split=(0.7, 0.15, 0.15),
-        batch_size=64,
-        num_workers=0,
-        seed=42,
-        balance_train=True,
+        window_size=args.window_size,
+        stride=args.stride,
+        split=tuple(args.split),
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        seed=args.seed,
+        balance_train=args.balance_train,
     )
     print("meta:", meta)
 
@@ -61,10 +80,7 @@ def train():
                 x = x.to(device)           # [B,T,3]
                 y = y.to(device)           # [B]
 
-                try:
-                    logits = model(x)      # preferred
-                except Exception:
-                    logits = model(x.permute(0, 2, 1))  # [B,3,T]
+                logits = model(x)
 
                 pred = logits.argmax(dim=1)
 
@@ -83,7 +99,7 @@ def train():
 
         return acc, bal_acc, (tn, fp, fn, tp)
 
-    num_epochs = 30
+    num_epochs = args.epochs
     for epoch in range(1, num_epochs + 1):
         model.train()
         total_loss = 0.0
@@ -93,10 +109,7 @@ def train():
             x = x.to(device)
             y = y.to(device)
 
-            try:
-                logits = model(x)
-            except Exception:
-                logits = model(x.permute(0, 2, 1))
+            logits = model(x)
 
             loss = criterion(logits, y)
 

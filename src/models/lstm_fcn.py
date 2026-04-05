@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class LSTMFCNClassifier(nn.Module):
     def __init__(self, num_classes, in_channels=1, lstm_hidden=128, dropout=0.3):
         super().__init__()
@@ -21,7 +22,7 @@ class LSTMFCNClassifier(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(128 + lstm_hidden, num_classes)
 
-    def forward(self, x):
+    def forward_features(self, x):
         # x: [B,T,1]
         # FCN branch: [B,1,T]
         z = x.permute(0, 2, 1)
@@ -35,6 +36,13 @@ class LSTMFCNClassifier(nn.Module):
         _, (h_n, _) = self.lstm(x_l)
         h = h_n[-1]                   # [B,H]
 
-        out = torch.cat([z, h], dim=1)
-        out = self.dropout(out)
-        return self.fc(out)
+        feat = torch.cat([z, h], dim=1)
+        feat = self.dropout(feat)
+        return feat
+
+    def forward_head(self, feat):
+        return self.fc(feat)
+
+    def forward(self, x):
+        feat = self.forward_features(x)
+        return self.forward_head(feat)
