@@ -34,6 +34,13 @@ def load_cwru_mat_1d(mat_path: Path) -> np.ndarray:
     return sig
 
 
+def _safe_load_cwru_mat_1d(mat_path: Path):
+    try:
+        return load_cwru_mat_1d(mat_path), None
+    except (OSError, ValueError, NotImplementedError) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+
+
 def zscore_1d(x: np.ndarray, mean=None, std=None, eps=1e-8):
     if mean is None:
         mean = float(np.mean(x))
@@ -108,6 +115,7 @@ def build_cwru_from_folder(
         raise FileNotFoundError(f"No .mat files found under: {mat_dir}")
 
     signals, labels, used_files = [], [], []
+    skipped_files = []
 
     for fp in files:
         name = fp.name.lower()
@@ -120,7 +128,11 @@ def build_cwru_from_folder(
         if lab is None:
             continue
 
-        sig = load_cwru_mat_1d(fp)
+        sig, err = _safe_load_cwru_mat_1d(fp)
+        if sig is None:
+            skipped_files.append({"file": fp.name, "reason": err})
+            print(f"[WARN] skipping unreadable CWRU file: {fp.name} ({err})")
+            continue
 
         if normalize == "per_file":
             sig, _, _ = zscore_1d(sig)
@@ -131,6 +143,15 @@ def build_cwru_from_folder(
 
     if not signals:
         raise ValueError("No files matched your label_map. Check naming rules.")
+
+    present_classes = sorted(set(labels))
+    expected_classes = sorted(set(label_map.values()))
+    if present_classes != expected_classes:
+        raise ValueError(
+            f"After filtering unreadable files, class coverage is incomplete. "
+            f"expected={expected_classes}, got={present_classes}. "
+            f"skipped_files={len(skipped_files)}"
+        )
 
     # file-level STRATIFIED split
     a, b, c = split
@@ -223,6 +244,8 @@ def build_cwru_from_folder(
         "mean_std": mean_std,
         "balance_train": bool(balance_train),
         "used_files_sample": used_files[:10],
+        "skipped_files_count": len(skipped_files),
+        "skipped_files_sample": skipped_files[:10],
         "train_windows": len(train_ds),
         "val_windows": len(val_ds),
         "test_windows": len(test_ds),

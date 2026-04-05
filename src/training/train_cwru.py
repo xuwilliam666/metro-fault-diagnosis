@@ -1,5 +1,23 @@
 import os
 from pathlib import Path
+import argparse
+
+
+def _sanitize_omp_num_threads():
+    value = os.environ.get("OMP_NUM_THREADS")
+    if value is None:
+        return
+
+    try:
+        if int(value) <= 0:
+            raise ValueError
+    except ValueError:
+        os.environ["OMP_NUM_THREADS"] = "1"
+        print("[WARN] Invalid OMP_NUM_THREADS detected, reset to 1")
+
+
+_sanitize_omp_num_threads()
+
 import torch
 import torch.nn as nn
 import pandas as pd
@@ -7,6 +25,48 @@ from sklearn.metrics import confusion_matrix
 import numpy as np
 from src.data.cwru_dataset import build_cwru_from_folder
 from src.models.lstm_fcn import LSTMFCNClassifier
+
+
+def parse_args():
+    root = Path(__file__).resolve().parent.parent.parent
+    parser = argparse.ArgumentParser(description="Train CWRU supervised baseline with LSTM-FCN")
+    parser.add_argument("--data_root", type=Path, default=root / "data" / "raw" / "CWRU" / "12k_DE")
+    parser.add_argument("--label_mode", choices=["fault3", "health_inner_outer"], default="fault3")
+    parser.add_argument("--window_size", type=int, default=500)
+    parser.add_argument("--stride", type=int, default=250)
+    parser.add_argument("--split", type=float, nargs=3, default=(0.7, 0.15, 0.15))
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--balance_train", action="store_true", default=True)
+    parser.add_argument("--no_balance_train", action="store_false", dest="balance_train")
+    parser.add_argument("--normalize", choices=["per_file", "train_global"], default="per_file")
+    return parser.parse_args()
+
+
+def build_label_map(label_mode: str):
+    if label_mode == "health_inner_outer":
+        return {
+            "normal": 0,
+            "ir": 1,
+            "or": 2,
+        }
+
+    return {
+        "ir": 0,
+        "or": 1,
+        "b007": 2,
+        "b014": 2,
+        "b021": 2,
+        "b028": 2,
+    }
+
+
+def label_mode_names(label_mode: str):
+    if label_mode == "health_inner_outer":
+        return ["healthy=0", "inner=1", "outer=2"]
+    return ["IR=0", "OR=1", "BALL=2"]
 
 
 def eval_loader(model, loader, device, num_classes: int):
@@ -44,34 +104,26 @@ def eval_loader(model, loader, device, num_classes: int):
 
 
 def train():
+    args = parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
 
     root = Path(__file__).resolve().parent.parent.parent
-    data_root = root / "data" / "raw" / "CWRU" / "12k_DE"
+    data_root = Path(args.data_root)
 
-    # A: 3-class
-    # IR=0, OR=1, BALL=2
-    label_map = {
-        "ir": 0,
-        "or": 1,
-        "b007": 2,
-        "b014": 2,
-        "b021": 2,
-        "b028": 2,
-    }
+    label_map = build_label_map(args.label_mode)
 
     train_loader, val_loader, test_loader, meta = build_cwru_from_folder(
         mat_dir=data_root,
         label_map=label_map,
-        window_size=500,
-        stride=250,
-        split=(0.7, 0.15, 0.15),
-        seed=42,
-        batch_size=64,
-        num_workers=0,
-        balance_train=True,
-        normalize="per_file",
+        window_size=args.window_size,
+        stride=args.stride,
+        split=tuple(args.split),
+        seed=args.seed,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        balance_train=args.balance_train,
+        normalize=args.normalize,
     )
     print("meta:", meta)
 
@@ -98,7 +150,7 @@ def train():
     best_path = root / "checkpoints" / "best_cwru_lstm_fcn.pt"
     log_path  = root / "logs" / "cwru_train_log.csv"
 
-    epochs = 20
+    epochs = args.epochs
     for ep in range(1, epochs + 1):
         model.train()
         total_loss = 0.0
@@ -149,7 +201,7 @@ def train():
     test_acc, test_bal, test_cm = eval_loader(model, test_loader, device, num_classes=num_classes)
 
     print(f"[TEST] acc={test_acc:.4f} bal_acc={test_bal:.4f}")
-    print("test confusion (rows=true, cols=pred), labels [IR=0, OR=1, BALL=2]:\n", test_cm)
+    print(f"test confusion (rows=true, cols=pred), labels [{', '.join(label_mode_names(args.label_mode))}]:\n", test_cm)
 
 
 if __name__ == "__main__":
