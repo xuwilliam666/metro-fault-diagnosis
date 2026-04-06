@@ -6,6 +6,25 @@ import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 
+def _infer_cwru_label_from_name(filename: str, label_map: dict):
+    name = filename.lower()
+    stem = Path(filename).stem.lower()
+
+    # Use stricter prefix matching for the ambiguous common labels first.
+    strict_prefixes = ("normal", "ir", "or")
+    for key in strict_prefixes:
+        if key in label_map and stem.startswith(key):
+            return int(label_map[key])
+
+    for key, val in label_map.items():
+        if key.lower() in strict_prefixes:
+            continue
+        if key.lower() in name:
+            return int(val)
+
+    return None
+
+
 def load_cwru_mat_1d(mat_path: Path) -> np.ndarray:
     """
     Load a CWRU .mat file and return the longest 1D numeric array as signal.
@@ -118,13 +137,7 @@ def build_cwru_from_folder(
     skipped_files = []
 
     for fp in files:
-        name = fp.name.lower()
-
-        lab = None
-        for key, val in label_map.items():
-            if key.lower() in name:
-                lab = int(val)
-                break
+        lab = _infer_cwru_label_from_name(fp.name, label_map)
         if lab is None:
             continue
 

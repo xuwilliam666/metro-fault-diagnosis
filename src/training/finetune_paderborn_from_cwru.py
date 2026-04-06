@@ -18,6 +18,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Finetune Paderborn LSTM-FCN from a CWRU checkpoint")
     parser.add_argument("--cwru_ckpt", type=Path, required=True)
     parser.add_argument("--data_root", type=Path, default=root / "data" / "raw" / "Paderborn" / "archive-2")
+    parser.add_argument("--task_mode", choices=["health_inner_outer", "inner_outer"], default="health_inner_outer")
     parser.add_argument("--output_dir", type=Path, default=root / "logs" / "paderborn_transfer")
     parser.add_argument("--mode", choices=["full", "frozen"], default="full")
     parser.add_argument("--epochs", type=int, default=20)
@@ -33,6 +34,7 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--normalize", choices=["per_file", "train_global"], default="per_file")
     parser.add_argument("--include_conditions", nargs="*", default=None)
+    parser.add_argument("--train_fraction", type=float, default=1.0)
     parser.add_argument("--balance_train", action="store_true", default=True)
     parser.add_argument("--no_balance_train", action="store_false", dest="balance_train")
     return parser.parse_args()
@@ -52,7 +54,7 @@ def args_to_dict(args):
     return out
 
 
-def evaluate(model, loader, device, num_classes=3):
+def evaluate(model, loader, device, num_classes):
     model.eval()
     ys, ps = [], []
     with torch.no_grad():
@@ -110,11 +112,15 @@ def main():
         balance_train=args.balance_train,
         normalize=args.normalize,
         include_conditions=args.include_conditions,
+        train_fraction=args.train_fraction,
+        task_mode=args.task_mode,
     )
     print("meta:", meta)
 
+    num_classes = meta["num_classes"]
+
     model = LSTMFCNClassifier(
-        num_classes=3,
+        num_classes=num_classes,
         in_channels=1,
         lstm_hidden=args.lstm_hidden,
         dropout=args.dropout,
@@ -161,8 +167,8 @@ def main():
             total += y.size(0)
 
         train_loss = total_loss / max(total, 1)
-        train_metrics = evaluate(model, train_loader, device)
-        val_metrics = evaluate(model, val_loader, device)
+        train_metrics = evaluate(model, train_loader, device, num_classes=num_classes)
+        val_metrics = evaluate(model, val_loader, device, num_classes=num_classes)
 
         print(
             f"Epoch {epoch:02d}/{args.epochs} "
@@ -197,9 +203,9 @@ def main():
     best_checkpoint = torch.load(best_ckpt_path, map_location=device)
     model.load_state_dict(best_checkpoint["model_state_dict"])
 
-    train_metrics = evaluate(model, train_loader, device)
-    val_metrics = evaluate(model, val_loader, device)
-    test_metrics = evaluate(model, test_loader, device)
+    train_metrics = evaluate(model, train_loader, device, num_classes=num_classes)
+    val_metrics = evaluate(model, val_loader, device, num_classes=num_classes)
+    test_metrics = evaluate(model, test_loader, device, num_classes=num_classes)
 
     print(format_metrics("TRAIN", train_metrics))
     print(format_metrics("VAL", val_metrics))

@@ -6,6 +6,51 @@ import torch
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 
 
+def _as_clean_1d_float_array(x):
+    arr = np.asarray(x, dtype=np.float32).reshape(-1)
+    arr = arr[np.isfinite(arr)]
+    return arr
+
+
+def _extract_data_channels(entries):
+    channels = []
+    if not isinstance(entries, np.ndarray):
+        return channels
+
+    for item in entries.flat:
+        data = getattr(item, "Data", None)
+        if data is None:
+            continue
+
+        arr = _as_clean_1d_float_array(data)
+        if arr.size < 10:
+            continue
+
+        channels.append({
+            "data": arr,
+            "name": str(getattr(item, "Name", "")).strip(),
+            "path": str(getattr(item, "Path", "")).strip(),
+            "device": str(getattr(item, "Device", "")).strip(),
+        })
+    return channels
+
+
+def _pick_best_channel(channels):
+    if not channels:
+        return None
+
+    # Prefer vibration/acceleration-like channels when metadata is present.
+    keywords = ("vib", "vibration", "acc", "acceler", "bearing")
+    for channel in channels:
+        meta = " ".join([channel["name"], channel["path"], channel["device"]]).lower()
+        if any(keyword in meta for keyword in keywords):
+            return channel["data"]
+
+    # Otherwise prefer the first measured Y channel, which is more reliable than
+    # recursively grabbing an arbitrary longest numeric vector from the matlab file.
+    return channels[0]["data"]
+
+
 def _collect_numeric_1d_arrays(obj, out):
     if isinstance(obj, np.ndarray) and np.issubdtype(obj.dtype, np.number):
         if obj.ndim == 1:
@@ -37,6 +82,19 @@ def load_paderborn_mat_1d(mat_path: Path) -> np.ndarray:
     The files can contain nested matlab structs, so recurse conservatively.
     """
     mdict = scipy.io.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+
+    root_key = mat_path.stem
+    root = mdict.get(root_key)
+    if root is not None:
+        # Paderborn files store measured channels in struct arrays X and Y.
+        # Prefer Y measurement channels, then fall back to X.
+        y_data = _pick_best_channel(_extract_data_channels(getattr(root, "Y", None)))
+        if y_data is not None:
+            return y_data
+
+        x_data = _pick_best_channel(_extract_data_channels(getattr(root, "X", None)))
+        if x_data is not None:
+            return x_data
 
     candidates = []
     _collect_numeric_1d_arrays(mdict, candidates)
@@ -96,15 +154,26 @@ class PaderbornWindowDataset(Dataset):
         return x, y
 
 
-def infer_paderborn_label(path: Path):
+def infer_paderborn_label(path: Path, task_mode: str = "health_inner_outer"):
     """
-    First-pass 3-class mapping aligned to CWRU:
-      K00* -> healthy
-      KI*  -> inner race fault
-      KA*  -> outer race fault
-    Skip KB* for now because it does not map cleanly to the initial CWRU setup.
+    Supported mappings:
+      health_inner_outer:
+        K00* -> healthy
+        KI*  -> inner race fault
+        KA*  -> outer race fault
+      inner_outer:
+        KI*  -> inner race fault
+        KA*  -> outer race fault
     """
     folder = path.parent.name.upper()
+
+    if task_mode == "inner_outer":
+        if folder.startswith("KI"):
+            return 0
+        if folder.startswith("KA"):
+            return 1
+        return None
+
     if folder.startswith("K0"):
         return 0
     if folder.startswith("KI"):
@@ -125,6 +194,8 @@ def build_paderborn_from_folder(
     balance_train=True,
     normalize="per_file",  # "per_file" or "train_global"
     include_conditions=None,
+    train_fraction: float = 1.0,
+    task_mode: str = "health_inner_outer",
 ):
     rng = np.random.default_rng(seed)
     data_dir = Path(data_dir)
@@ -137,7 +208,7 @@ def build_paderborn_from_folder(
     skipped_files = []
 
     for fp in files:
-        label = infer_paderborn_label(fp)
+        label = infer_paderborn_label(fp, task_mode=task_mode)
         if label is None:
             continue
 
@@ -164,7 +235,13 @@ def build_paderborn_from_folder(
         raise ValueError("No usable Paderborn files were found.")
 
     present_classes = sorted(set(labels))
-    expected_classes = [0, 1, 2]
+    if task_mode == "inner_outer":
+        expected_classes = [0, 1]
+        class_names = {0: "inner", 1: "outer"}
+    else:
+        expected_classes = [0, 1, 2]
+        class_names = {0: "healthy", 1: "inner", 2: "outer"}
+
     if present_classes != expected_classes:
         raise ValueError(
             f"After filtering unreadable Paderborn files, class coverage is incomplete. "
@@ -205,6 +282,22 @@ def build_paderborn_from_folder(
     sig_te = [signals[i] for i in te_idx]
     lab_te = [labels[i] for i in te_idx]
 
+    if not (0.0 < float(train_fraction) <= 1.0):
+        raise ValueError(f"train_fraction must be in (0, 1], got {train_fraction}")
+
+    if train_fraction < 1.0:
+        keep_tr_idx = []
+        lab_tr_arr = np.asarray(lab_tr, dtype=np.int64)
+        for cls in sorted(set(lab_tr_arr.tolist())):
+            cls_idx = np.where(lab_tr_arr == cls)[0]
+            rng.shuffle(cls_idx)
+            n_keep = max(1, int(np.ceil(len(cls_idx) * float(train_fraction))))
+            keep_tr_idx.extend(cls_idx[:n_keep].tolist())
+
+        rng.shuffle(keep_tr_idx)
+        sig_tr = [sig_tr[i] for i in keep_tr_idx]
+        lab_tr = [lab_tr[i] for i in keep_tr_idx]
+
     mean_std = None
     if normalize == "train_global":
         all_tr = np.concatenate(sig_tr, axis=0)
@@ -236,9 +329,9 @@ def build_paderborn_from_folder(
         "num_files_train": len(sig_tr),
         "num_files_val": len(sig_va),
         "num_files_test": len(sig_te),
-        "num_classes": 3,
-        "class_ids": [0, 1, 2],
-        "class_names": {0: "healthy", 1: "inner", 2: "outer"},
+        "num_classes": len(expected_classes),
+        "class_ids": expected_classes,
+        "class_names": class_names,
         "window_size": int(window_size),
         "stride": int(stride),
         "split": split,
@@ -250,6 +343,8 @@ def build_paderborn_from_folder(
         "skipped_files_count": len(skipped_files),
         "skipped_files_sample": skipped_files[:10],
         "include_conditions": sorted(include_conditions) if include_conditions is not None else None,
+        "train_fraction": float(train_fraction),
+        "task_mode": task_mode,
         "train_windows": len(train_ds),
         "val_windows": len(val_ds),
         "test_windows": len(test_ds),

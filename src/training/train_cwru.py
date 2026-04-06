@@ -31,7 +31,7 @@ def parse_args():
     root = Path(__file__).resolve().parent.parent.parent
     parser = argparse.ArgumentParser(description="Train CWRU supervised baseline with LSTM-FCN")
     parser.add_argument("--data_root", type=Path, default=root / "data" / "raw" / "CWRU" / "12k_DE")
-    parser.add_argument("--label_mode", choices=["fault3", "health_inner_outer"], default="fault3")
+    parser.add_argument("--label_mode", choices=["fault3", "health_inner_outer", "inner_outer"], default="fault3")
     parser.add_argument("--window_size", type=int, default=500)
     parser.add_argument("--stride", type=int, default=250)
     parser.add_argument("--split", type=float, nargs=3, default=(0.7, 0.15, 0.15))
@@ -46,6 +46,12 @@ def parse_args():
 
 
 def build_label_map(label_mode: str):
+    if label_mode == "inner_outer":
+        return {
+            "ir": 0,
+            "or": 1,
+        }
+
     if label_mode == "health_inner_outer":
         return {
             "normal": 0,
@@ -64,9 +70,19 @@ def build_label_map(label_mode: str):
 
 
 def label_mode_names(label_mode: str):
+    if label_mode == "inner_outer":
+        return ["inner=0", "outer=1"]
     if label_mode == "health_inner_outer":
         return ["healthy=0", "inner=1", "outer=2"]
     return ["IR=0", "OR=1", "BALL=2"]
+
+
+def checkpoint_stem(label_mode: str):
+    if label_mode == "inner_outer":
+        return "cwru_inner_outer_lstm_fcn"
+    if label_mode == "health_inner_outer":
+        return "cwru_health_inner_outer_lstm_fcn"
+    return "cwru_fault3_lstm_fcn"
 
 
 def eval_loader(model, loader, device, num_classes: int):
@@ -110,6 +126,9 @@ def train():
 
     root = Path(__file__).resolve().parent.parent.parent
     data_root = Path(args.data_root)
+    if args.label_mode == "health_inner_outer" and data_root.name == "12k_DE":
+        data_root = data_root.parent
+        print("[INFO] label_mode=health_inner_outer requires Normal files; using data root:", data_root)
 
     label_map = build_label_map(args.label_mode)
 
@@ -147,8 +166,12 @@ def train():
     train_losses, val_accs, val_bals = [], [], []
 
     best_val_bal = -1.0
-    best_path = root / "checkpoints" / "best_cwru_lstm_fcn.pt"
-    log_path  = root / "logs" / "cwru_train_log.csv"
+    stem = checkpoint_stem(args.label_mode)
+    best_path = root / "checkpoints" / f"best_{stem}.pt"
+    log_path = root / "logs" / f"{stem}_train_log.csv"
+    print("label_mode:", args.label_mode)
+    print("best checkpoint path:", best_path)
+    print("train log path:", log_path)
 
     epochs = args.epochs
     for ep in range(1, epochs + 1):

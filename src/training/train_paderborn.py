@@ -44,6 +44,7 @@ def parse_args():
     root = Path(__file__).resolve().parent.parent.parent
     parser = argparse.ArgumentParser(description="Train Paderborn supervised baseline with LSTM-FCN")
     parser.add_argument("--data_root", type=Path, default=root / "data" / "raw" / "Paderborn" / "archive-2")
+    parser.add_argument("--task_mode", choices=["health_inner_outer", "inner_outer"], default="health_inner_outer")
     parser.add_argument("--window_size", type=int, default=2048)
     parser.add_argument("--stride", type=int, default=512)
     parser.add_argument("--split", type=float, nargs=3, default=(0.7, 0.15, 0.15))
@@ -55,6 +56,7 @@ def parse_args():
     parser.add_argument("--weight_decay", type=float, default=1e-4)
     parser.add_argument("--normalize", choices=["per_file", "train_global"], default="per_file")
     parser.add_argument("--include_conditions", nargs="*", default=None)
+    parser.add_argument("--train_fraction", type=float, default=1.0)
     parser.add_argument("--balance_train", action="store_true", default=True)
     parser.add_argument("--no_balance_train", action="store_false", dest="balance_train")
     return parser.parse_args()
@@ -77,13 +79,16 @@ def train():
         balance_train=args.balance_train,
         normalize=args.normalize,
         include_conditions=args.include_conditions,
+        train_fraction=args.train_fraction,
+        task_mode=args.task_mode,
     )
     print("meta:", meta)
 
     xb, yb = next(iter(train_loader))
     print("batch x:", xb.shape, "batch y unique:", sorted(set(yb.tolist())))
 
-    model = LSTMFCNClassifier(num_classes=3, in_channels=1, lstm_hidden=128, dropout=0.2).to(device)
+    num_classes = meta["num_classes"]
+    model = LSTMFCNClassifier(num_classes=num_classes, in_channels=1, lstm_hidden=128, dropout=0.2).to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -116,7 +121,7 @@ def train():
             total += y.size(0)
 
         train_loss = total_loss / max(total, 1)
-        val_acc, val_bal, _ = eval_loader(model, val_loader, device, num_classes=3)
+        val_acc, val_bal, _ = eval_loader(model, val_loader, device, num_classes=num_classes)
 
         print(f"Epoch {ep:02d}/{args.epochs} train_loss={train_loss:.4f} | val_acc={val_acc:.4f} val_bal={val_bal:.4f}")
 
@@ -138,9 +143,10 @@ def train():
     print("Saved log to:", log_path)
 
     model.load_state_dict(torch.load(best_path, map_location=device))
-    test_acc, test_bal, test_cm = eval_loader(model, test_loader, device, num_classes=3)
+    test_acc, test_bal, test_cm = eval_loader(model, test_loader, device, num_classes=num_classes)
     print(f"[TEST] acc={test_acc:.4f} bal_acc={test_bal:.4f}")
-    print("test confusion (rows=true, cols=pred), labels [healthy=0, inner=1, outer=2]:\n", test_cm)
+    label_desc = ", ".join([f"{v}={k}" for k, v in meta["class_names"].items()])
+    print(f"test confusion (rows=true, cols=pred), labels [{label_desc}]:\n", test_cm)
 
 
 if __name__ == "__main__":
