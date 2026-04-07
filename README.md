@@ -53,10 +53,6 @@ metro-fault-diagnosis/
 - task: supervised bearing fault classification
 - final use in project: structured target-domain transfer evaluation
 
-### Bogie dataset
-- task: supervised multi-class classification
-- final use in project: auxiliary classification experiments
-
 ## Environment
 
 Install dependencies:
@@ -220,50 +216,4 @@ It uses decision-level fusion:
 - if `anomaly_score >= T` and `classifier_confidence < P` -> `Warning`
 - else -> `Fault`
 
-Important note:
-
-- the anomaly score comes from a real trained `MetroPT` anomaly model
-- if no naturally aligned classifier-confidence time series is available on the same MetroPT time axis, the integration script uses a transparent deterministic proxy confidence progression for system demonstration
-- this is intended for final system visualization and report explanation, not as a new benchmark claim
-
-## Main Scripts
-
-### Data
-- [`scripts/prepare_metropt3.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/scripts/prepare_metropt3.py)
-- [`scripts/split_bogie_dataset1.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/scripts/split_bogie_dataset1.py)
-
-### Training
-- [`src/training/train_metropt.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/train_metropt.py)
-- [`src/training/train_metrodataset.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/train_metrodataset.py)
-- [`src/training/train_cwru.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/train_cwru.py)
-- [`src/training/train_paderborn.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/train_paderborn.py)
-- [`src/training/finetune_metro_from_cwru.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/finetune_metro_from_cwru.py)
-- [`src/training/finetune_paderborn_from_cwru.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/finetune_paderborn_from_cwru.py)
-
-### Utilities
-- [`src/training/transfer_utils.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/transfer_utils.py)
-- [`src/training/extract_metro_features.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/extract_metro_features.py)
-- [`src/training/run_integration_demo.py`](/Users/xudingwei/Desktop/metro-fault-diagnosis/src/training/run_integration_demo.py)
-
-## Final Report Artifacts
-
-Recommended files to use in the final report:
-
-- anomaly detection metric summary:
-  - `logs/metropT_best_metrics.txt`
-- final integration figure:
-  - `logs/integration_demo/integration_result.pdf`
-- integration system summary:
-  - `logs/integration_demo/integration_summary.json`
-- experiment setup notes:
-  - `logs/section4_experimental_setup_notes.txt`
-
-## Notes
-
-- The Metro supervised pipeline was corrected to avoid leakage:
-  - split raw sequences by time first
-  - compute normalization statistics on train only
-  - generate windows separately inside train/val/test
-- CWRU and Paderborn loaders both support file-level splits and optional balanced sampling.
-- Some raw `.mat` files may be unreadable; the loaders skip them with warnings.
 
