@@ -5,15 +5,7 @@ This repository contains the final codebase for a metro equipment monitoring and
 - unsupervised anomaly detection on `MetroPT-3` using an `Anomaly Transformer`
 - supervised fault classification using `LSTM-FCN`, including cross-domain transfer learning experiments
 
-The final project conclusion is:
 
-- transfer learning is feasible on structured bearing datasets such as `CWRU` and `Paderborn`
-- transfer does not fully generalize to the real metro supervised dataset
-- this is treated as a meaningful domain-gap finding rather than a code failure
-- the final system demonstration uses lightweight decision-level fusion to produce three system states:
-  - `Normal`
-  - `Warning`
-  - `Fault`
 
 ## Repository Structure
 
@@ -36,14 +28,13 @@ metro-fault-diagnosis/
 ### MetroPT-3
 - task: unsupervised anomaly detection
 - model: `Anomaly Transformer`
-- final use in project: anomaly branch of the integrated system
 
 ### Metro supervised vibration dataset
 - task: supervised binary classification
 - labels:
   - `0 = Normal`
   - `1 = Failure`
-- final use in project: real-world target-domain transfer analysis
+
 
 ### CWRU
 - task: supervised bearing fault classification
